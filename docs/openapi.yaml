@@ -1,0 +1,2001 @@
+openapi: 3.0.3
+info:
+  title: API - Sistema de Punto de Venta (POS ITH)
+  description: >
+    API REST para el sistema de Punto de Venta (POS) de comercio minorista.
+    Cubre catálogo de productos, ventas, inventario y corte de caja por turno.
+    Fuera de alcance: e-commerce, gestión de proveedores y contabilidad formal.
+
+
+    **Formato de respuestas**
+
+
+    Éxito: `{ "success": true, "data": ... }`
+
+
+    Error: `{ "success": false, "error": "Mensaje descriptivo" }`
+
+
+    **Autenticación**: JWT (Bearer), expiración máxima de sesión de 8 horas.
+  version: "1.0.0"
+  contact:
+    name: Equipo POS ITH
+servers:
+  - url: https://api.pos-ith.example.com/api
+    description: Servidor de producción (ejemplo)
+  - url: http://localhost:3000/api
+    description: Servidor local de desarrollo
+
+tags:
+  - name: Autenticación
+    description: Inicio de sesión y manejo de tokens JWT
+  - name: Productos
+    description: Alta, edición, baja lógica y consulta del catálogo de productos
+  - name: Categorías
+    description: Gestión de categorías jerárquicas de productos
+  - name: Ventas
+    description: Apertura de tickets, cobro, descuentos, cancelaciones y devoluciones
+  - name: Inventario
+    description: Entradas, ajustes, alertas de stock mínimo e historial de movimientos
+  - name: Turnos y Corte de Caja
+    description: Apertura de turno, arqueos, retiros y corte final de caja
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Token JWT obtenido en `/auth/login`. Expira a las 8 horas de la
+        sesión. El acceso a módulos sensibles (reportes financieros,
+        ajustes de inventario) requiere el rol adecuado codificado en el token.
+
+  parameters:
+    skuParam:
+      name: sku
+      in: path
+      required: true
+      description: Código SKU único del producto
+      schema:
+        type: string
+        example: "001234"
+    folioParam:
+      name: folio
+      in: path
+      required: true
+      description: Folio consecutivo del ticket de venta
+      schema:
+        type: integer
+        example: 2045
+    turnoIdParam:
+      name: turnoId
+      in: path
+      required: true
+      description: Identificador único del turno de caja
+      schema:
+        type: string
+        format: uuid
+        example: "b3f1c2e0-1a2b-4c3d-9e8f-0123456789ab"
+
+  responses:
+    BadRequest:
+      description: Solicitud inválida (validación de datos fallida)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            precioInvalido:
+              summary: Precio de venta menor o igual a cero
+              value:
+                success: false
+                error: "El precio de venta debe ser mayor a cero"
+    Unauthorized:
+      description: Token ausente, inválido o expirado
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            sinToken:
+              value:
+                success: false
+                error: "Token de autenticación inválido o expirado"
+    Forbidden:
+      description: El usuario no tiene el rol/permiso requerido para esta acción
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            sinPermiso:
+              value:
+                success: false
+                error: "No tienes permisos para acceder a este recurso"
+    NotFound:
+      description: El recurso solicitado no existe
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            noEncontrado:
+              value:
+                success: false
+                error: "No se encontró ninguna venta con el folio #9999"
+    Conflict:
+      description: Conflicto con el estado actual del recurso
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            turnoActivo:
+              value:
+                success: false
+                error: "La terminal Caja 1 ya tiene un turno activo (#T-088)"
+    ServerError:
+      description: Error interno del servidor. Nunca expone detalles internos al cliente.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            errorGenerico:
+              value:
+                success: false
+                error: "Ocurrió un error inesperado. Intenta nuevamente más tarde."
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          example: "Mensaje descriptivo del error"
+      required: [success, error]
+
+    Producto:
+      type: object
+      properties:
+        sku:
+          type: string
+          example: "001234"
+        name:
+          type: string
+          example: "Coca-Cola 600ml"
+        description:
+          type: string
+          example: "Refresco de cola, botella retornable 600ml"
+        price:
+          type: number
+          format: float
+          example: 20.00
+          description: Precio de venta con IVA incluido
+        cost:
+          type: number
+          format: float
+          example: 12.50
+          description: Costo de compra. No visible para el rol "Cajero" (RN-07)
+        categoryId:
+          type: string
+          format: uuid
+        stock:
+          type: integer
+          example: 48
+        minStock:
+          type: integer
+          example: 10
+        allowNegativeStock:
+          type: boolean
+          default: false
+          description: Permite vender aunque el stock llegue a cero (RN-02)
+        barcodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/CodigoBarras"
+        status:
+          type: string
+          enum: [activo, inactivo]
+          example: activo
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ProductoInput:
+      type: object
+      required: [sku, name, price, categoryId]
+      properties:
+        sku:
+          type: string
+          example: "001234"
+        name:
+          type: string
+          example: "Coca-Cola 600ml"
+        description:
+          type: string
+          example: "Refresco de cola, botella retornable 600ml"
+        price:
+          type: number
+          format: float
+          example: 20.00
+        cost:
+          type: number
+          format: float
+          example: 12.50
+        categoryId:
+          type: string
+          format: uuid
+        stock:
+          type: integer
+          example: 50
+        minStock:
+          type: integer
+          example: 10
+        allowNegativeStock:
+          type: boolean
+          default: false
+
+    CodigoBarras:
+      type: object
+      properties:
+        code:
+          type: string
+          example: "7501055300012"
+        format:
+          type: string
+          enum: [EAN-13, EAN-8, CODE-128]
+          example: EAN-13
+
+    Categoria:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: "Refrescos"
+        parentId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Categoría padre (para jerarquías, ej. Bebidas > Refrescos)
+
+    ItemTicket:
+      type: object
+      required: [sku, quantity]
+      properties:
+        sku:
+          type: string
+          example: "001234"
+        name:
+          type: string
+          example: "Coca-Cola 600ml"
+        quantity:
+          type: integer
+          example: 2
+        unitPrice:
+          type: number
+          format: float
+          example: 20.00
+        discount:
+          type: number
+          format: float
+          example: 0
+        lineTotal:
+          type: number
+          format: float
+          example: 40.00
+
+    Pago:
+      type: object
+      required: [method, amount]
+      properties:
+        method:
+          type: string
+          enum: [efectivo, tarjeta, vale_despensa]
+          example: efectivo
+        amount:
+          type: number
+          format: float
+          example: 50.00
+
+    VentaInput:
+      type: object
+      required: [items, payments]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ItemTicket"
+        payments:
+          type: array
+          items:
+            $ref: "#/components/schemas/Pago"
+
+    Venta:
+      type: object
+      properties:
+        folio:
+          type: integer
+          example: 2045
+        status:
+          type: string
+          enum: [abierto, pagado, cancelado]
+          example: pagado
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ItemTicket"
+        subtotal:
+          type: number
+          format: float
+          example: 34.48
+        tax:
+          type: number
+          format: float
+          example: 5.52
+          description: IVA 16% (RN-01)
+        total:
+          type: number
+          format: float
+          example: 40.00
+        payments:
+          type: array
+          items:
+            $ref: "#/components/schemas/Pago"
+        change:
+          type: number
+          format: float
+          nullable: true
+          example: 10.00
+        cashierId:
+          type: string
+          format: uuid
+        shiftId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+
+    DescuentoInput:
+      type: object
+      required: [type, value, reason]
+      properties:
+        itemSku:
+          type: string
+          nullable: true
+          description: Si se omite, el descuento aplica al total del ticket
+          example: "001234"
+        type:
+          type: string
+          enum: [porcentaje, monto_fijo]
+          example: porcentaje
+        value:
+          type: number
+          format: float
+          example: 15
+        reason:
+          type: string
+          example: "Promoción fin de semana"
+        supervisorPin:
+          type: string
+          nullable: true
+          description: Requerido si el descuento supera el límite autorizado sin supervisor
+          example: "4821"
+
+    DevolucionInput:
+      type: object
+      required: [originalFolio, items]
+      properties:
+        originalFolio:
+          type: integer
+          example: 2045
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              sku:
+                type: string
+                example: "SKU-JUGO1L"
+              quantity:
+                type: integer
+                example: 1
+        reason:
+          type: string
+          example: "Producto en mal estado"
+
+    Devolucion:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        originalFolio:
+          type: integer
+          example: 2045
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              sku:
+                type: string
+              quantity:
+                type: integer
+              amount:
+                type: number
+                format: float
+        totalRefunded:
+          type: number
+          format: float
+          example: 30.00
+        paymentMethod:
+          type: string
+          example: efectivo
+        processedBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+
+    EntradaInventarioInput:
+      type: object
+      required: [sku, quantity, reference]
+      properties:
+        sku:
+          type: string
+          example: "SKU-AGUA500"
+        quantity:
+          type: integer
+          example: 50
+          description: Entero positivo mayor a cero
+        reference:
+          type: string
+          example: "REM-20260101"
+          description: Referencia de remisión o factura
+
+    AjusteInventarioInput:
+      type: object
+      required: [sku, quantity, reason]
+      properties:
+        sku:
+          type: string
+          example: "SKU-LECHE1L"
+        quantity:
+          type: integer
+          example: -2
+          description: Positivo o negativo. Los ajustes negativos no pueden dejar el stock por debajo de cero.
+        reason:
+          type: string
+          enum: [merma, robo, error_conteo, otro]
+          example: merma
+
+    MovimientoInventario:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        sku:
+          type: string
+          example: "SKU-AGUA500"
+        type:
+          type: string
+          enum: [entrada, ajuste, venta, devolucion]
+          example: entrada
+        quantity:
+          type: integer
+          example: 50
+        resultingStock:
+          type: integer
+          example: 60
+        reference:
+          type: string
+          nullable: true
+          example: "REM-20260101"
+        userId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+
+    AlertaStock:
+      type: object
+      properties:
+        sku:
+          type: string
+          example: "SKU-LECHE1L"
+        productName:
+          type: string
+          example: "Leche 1L"
+        currentStock:
+          type: integer
+          example: 4
+        minStock:
+          type: integer
+          example: 5
+        status:
+          type: string
+          enum: [activa, cerrada]
+          example: activa
+
+    AperturaTurnoInput:
+      type: object
+      required: [terminal, initialFund]
+      properties:
+        terminal:
+          type: string
+          example: "Caja 1"
+        initialFund:
+          type: number
+          format: float
+          example: 500.00
+
+    Turno:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        terminal:
+          type: string
+          example: "Caja 1"
+        cashierId:
+          type: string
+          format: uuid
+        initialFund:
+          type: number
+          format: float
+          example: 500.00
+        status:
+          type: string
+          enum: [abierto, cerrado]
+          example: abierto
+        openedAt:
+          type: string
+          format: date-time
+        closedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    RetiroInput:
+      type: object
+      required: [amount]
+      properties:
+        amount:
+          type: number
+          format: float
+          example: 300.00
+        supervisorId:
+          type: string
+          format: uuid
+
+    CorteParcialInput:
+      type: object
+      required: [countedCash]
+      properties:
+        countedCash:
+          type: number
+          format: float
+          example: 950.00
+
+    CorteParcial:
+      type: object
+      properties:
+        expectedBalance:
+          type: number
+          format: float
+          example: 960.00
+        countedCash:
+          type: number
+          format: float
+          example: 950.00
+        difference:
+          type: number
+          format: float
+          example: -10.00
+
+    CorteFinalInput:
+      type: object
+      required: [countedCash]
+      properties:
+        countedCash:
+          type: number
+          format: float
+          example: 1380.00
+
+    CorteFinal:
+      type: object
+      properties:
+        turnoId:
+          type: string
+          format: uuid
+        initialFund:
+          type: number
+          format: float
+          example: 500.00
+        totalSalesByMethod:
+          type: object
+          properties:
+            efectivo:
+              type: number
+              format: float
+              example: 1200.00
+            tarjeta:
+              type: number
+              format: float
+              example: 850.00
+            vale_despensa:
+              type: number
+              format: float
+              example: 0
+        withdrawals:
+          type: number
+          format: float
+          example: 300.00
+        expectedBalance:
+          type: number
+          format: float
+          example: 1400.00
+        countedCash:
+          type: number
+          format: float
+          example: 1380.00
+        difference:
+          type: number
+          format: float
+          example: -20.00
+        status:
+          type: string
+          enum: [faltante, sobrante, cuadrado]
+          example: faltante
+        closedAt:
+          type: string
+          format: date-time
+
+    LoginInput:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          example: "jlopez"
+        password:
+          type: string
+          format: password
+          example: "********"
+
+    LoginResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+        expiresIn:
+          type: integer
+          example: 28800
+          description: Segundos hasta la expiración (máximo 8 horas)
+        user:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            username:
+              type: string
+              example: "jlopez"
+            role:
+              type: string
+              enum: [cajero, supervisor, administrador]
+              example: cajero
+
+paths:
+  /auth/login:
+    post:
+      tags: [Autenticación]
+      summary: Iniciar sesión
+      description: Autentica a un usuario (cajero, supervisor o administrador) y devuelve un token JWT.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginInput"
+      responses:
+        "200":
+          description: Autenticación exitosa
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: "#/components/schemas/LoginResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Usuario o contraseña incorrectos
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                credencialesInvalidas:
+                  value:
+                    success: false
+                    error: "Usuario o contraseña incorrectos"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /productos:
+    get:
+      tags: [Productos]
+      summary: Buscar/listar productos
+      description: Filtra por nombre, SKU o categoría. Por defecto solo muestra productos activos.
+      parameters:
+        - name: q
+          in: query
+          description: Texto de búsqueda (nombre o SKU)
+          schema:
+            type: string
+        - name: categoryId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [activo, inactivo]
+            default: activo
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Lista de productos
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Producto"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
+    post:
+      tags: [Productos]
+      summary: Alta de producto (US-P01)
+      description: >
+        Registra un nuevo producto en el catálogo. El SKU debe ser único
+        y el precio de venta debe ser mayor a cero. Requiere rol administrador.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProductoInput"
+            examples:
+              nuevoProducto:
+                value:
+                  sku: "001234"
+                  name: "Coca-Cola 600ml"
+                  description: "Refresco de cola, botella retornable 600ml"
+                  price: 20.00
+                  cost: 12.50
+                  categoryId: "5b9e2c10-27a1-4b0a-9c3d-9a1f6d2e0001"
+                  stock: 50
+                  minStock: 10
+      responses:
+        "201":
+          description: Producto creado exitosamente
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: "#/components/schemas/Producto"
+        "400":
+          description: SKU duplicado o precio inválido
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                skuDuplicado:
+                  value:
+                    success: false
+                    error: "Ya existe un producto con el SKU 001234"
+                precioInvalido:
+                  value:
+                    success: false
+                    error: "El precio de venta debe ser mayor a cero"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /productos/{sku}:
+    get:
+      tags: [Productos]
+      summary: Obtener producto por SKU
+      parameters:
+        - $ref: "#/components/parameters/skuParam"
+      responses:
+        "200":
+          description: Producto encontrado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: "#/components/schemas/Producto"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/ServerError"
+    put:
+      tags: [Productos]
+      summary: Editar producto (US-P02)
+      description: >
+        Modifica precio, descripción o categoría. Los cambios de precio
+        registran fecha, precio anterior y usuario. No se puede editar un
+        producto con tickets abiertos en curso.
+      parameters:
+        - $ref: "#/components/parameters/skuParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProductoInput"
+      responses:
+        "200":
+          description: Producto actualizado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: "#/components/schemas/Producto"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: El producto tiene tickets abiertos en curso
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                ticketsAbiertos:
+                  value:
+                    success: false
+                    error: "No se puede editar un producto con tickets abiertos en curso"
+        "500":
+          $ref: "#/components/responses/ServerError"
+    delete:
+      tags: [Productos]
+      summary: Baja lógica de producto (US-P03)
+      description: >
+        Desactiva el producto sin eliminarlo físicamente. Deja de aparecer
+        en búsquedas de venta, pero conserva su historial.
+      parameters:
+        - $ref: "#/components/parameters/skuParam"
+      responses:
+        "200":
+          description: Producto desactivado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      sku:
+                        type: string
+                        example: "001234"
+                      status:
+                        type: string
+                        example: inactivo
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /productos/{sku}/codigos-barras:
+    post:
+      tags: [Productos]
+      summary: Asignar código de barras (US-P05)
+      description: >
+        Asocia un código de barras a un producto. Formatos aceptados: EAN-13,
+        EAN-8 y Code 128. Un mismo código no puede pertenecer a dos productos
+        activos simultáneamente.
+      parameters:
+        - $ref: "#/components/parameters/skuParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CodigoBarras"
+      responses:
+        "201":
+          description: Código de barras asignado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: "#/components/schemas/CodigoBarras"
+        "400":
+          description: Código de barras ya asignado a otro producto activo, o formato no soportado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                codigoDuplicado:
+                  value:
+                    success: false
+                    error: "El código de barras 7501055300012 ya está asignado a otro producto activo"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /categorias:
+    get:
+      tags: [Categorías]
+      summary: Listar categorías (US-P04)
+      responses:
+        "200":
+          description: Lista de categorías
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Categoria"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
+    post:
+      tags: [Categorías]
+      summary: Crear categoría
+      description: Una categoría puede tener subcategorías (jerarquía, ej. Bebidas > Refrescos).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Categoria"
+      responses:
+        "201":
+          description: Categoría creada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: "#/components/schemas/Categoria"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /categorias/{id}:
+    delete:
+      tags: [Categorías]
+      summary: Eliminar categoría
+      description: No se puede eliminar una categoría con productos asignados.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Categoría eliminada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                      deleted:
+                        type: boolean
+                        example: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: La categoría tiene productos asignados
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                categoriaConProductos:
+                  value:
+                    success: false
+                    error: "No se puede eliminar una categoría con productos asignados"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /ventas:
+    post:
+      tags: [Ventas]
+      summary: Registrar venta (US-V01, US-V02)
+      description: >
+        Abre un ticket, agrega productos y procesa el cobro en uno o varios
+        métodos de pago. Requiere que el cajero tenga un turno de caja abierto.
+        La suma de los pagos debe ser mayor o igual al total del ticket; el
+        sistema calcula el cambio en efectivo automáticamente. RN-02: no se
+        permite la venta si el stock del producto es cero, salvo bandera
+        "permitir venta en negativo".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VentaInput"
+            examples:
+              ventaEfectivo:
+                summary: Venta con pago en efectivo
+                value:
+                  items:
+                    - sku: "001234"
+                      quantity: 2
+                  payments:
+                    - method: efectivo
+                      amount: 50.00
+      responses:
+        "201":
+          description: Venta registrada y pagada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: "#/components/schemas/Venta"
+              examples:
+                ventaPagada:
+                  value:
+                    success: true
+                    data:
+                      folio: 2045
+                      status: pagado
+                      items:
+                        - sku: "001234"
+                          name: "Coca-Cola 600ml"
+                          quantity: 2
+                          unitPrice: 20.00
+                          discount: 0
+                          lineTotal: 40.00
+                      subtotal: 34.48
+                      tax: 5.52
+                      total: 40.00
+                      payments:
+                        - method: efectivo
+                          amount: 50.00
+                      change: 10.00
+        "400":
+          description: Stock insuficiente, pago insuficiente o datos inválidos
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                stockInsuficiente:
+                  value:
+                    success: false
+                    error: "Stock insuficiente para el producto 001234"
+                pagoInsuficiente:
+                  value:
+                    success: false
+                    error: "La suma de los pagos es menor al total del ticket"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: El cajero no tiene un turno de caja abierto
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                sinTurno:
+                  value:
+                    success: false
+                    error: "Debes abrir un turno de caja antes de realizar ventas"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /ventas/{folio}:
+    get:
+      tags: [Ventas]
+      summary: Consultar ticket por folio
+      parameters:
+        - $ref: "#/components/parameters/folioParam"
+      responses:
+        "200":
+          description: Ticket encontrado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: "#/components/schemas/Venta"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No se encontró ninguna venta con el folio indicado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                folioInexistente:
+                  value:
+                    success: false
+                    error: "No se encontró ninguna venta con el folio #9999"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /ventas/{folio}/descuentos:
+    post:
+      tags: [Ventas]
+      summary: Aplicar descuento (US-V03)
+      description: >
+        Aplica un descuento porcentual o de monto fijo a un artículo o al
+        total del ticket. Descuentos mayores al 10% requieren el PIN del
+        supervisor.
+      parameters:
+        - $ref: "#/components/parameters/folioParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DescuentoInput"
+            examples:
+              descuentoConAutorizacion:
+                value:
+                  itemSku: "001234"
+                  type: porcentaje
+                  value: 15
+                  reason: "Promoción fin de semana"
+                  supervisorPin: "4821"
+      responses:
+        "200":
+          description: Descuento aplicado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: "#/components/schemas/Venta"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: PIN de supervisor requerido o incorrecto
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                pinRequerido:
+                  value:
+                    success: false
+                    error: "Se requiere el PIN del supervisor para descuentos mayores al 10%"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /ventas/{folio}/cancelar:
+    post:
+      tags: [Ventas]
+      summary: Cancelar ticket (US-V04)
+      description: >
+        Solo se puede cancelar un ticket en estado "abierto" (antes del pago).
+        Requiere confirmación del cajero o PIN del supervisor. El inventario
+        no se ve afectado.
+      parameters:
+        - $ref: "#/components/parameters/folioParam"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                supervisorPin:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Ticket cancelado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      folio:
+                        type: integer
+                        example: 2045
+                      status:
+                        type: string
+                        example: cancelado
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: El ticket ya fue pagado y no puede cancelarse
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                yaPagado:
+                  value:
+                    success: false
+                    error: "Solo se puede cancelar un ticket en estado abierto"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /ventas/{folio}/reimprimir:
+    post:
+      tags: [Ventas]
+      summary: Reimprimir ticket (US-V06)
+      description: >
+        Permite reimprimir un ticket hasta 24 horas después de la venta.
+        La reimpresión se identifica visualmente como "COPIA".
+      parameters:
+        - $ref: "#/components/parameters/folioParam"
+      responses:
+        "200":
+          description: Reimpresión generada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      folio:
+                        type: integer
+                        example: 2045
+                      label:
+                        type: string
+                        example: "COPIA"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Han pasado más de 24 horas desde la venta
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                fueraDePlazo:
+                  value:
+                    success: false
+                    error: "El plazo para reimprimir este ticket ha expirado (24 horas)"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /devoluciones:
+    post:
+      tags: [Ventas]
+      summary: Procesar devolución (US-V05)
+      description: >
+        Requiere el folio del ticket original. El sistema verifica que el
+        artículo fue incluido en ese ticket y que no han transcurrido más de
+        30 días naturales (RN-04). El stock del producto se incrementa
+        automáticamente al confirmar.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DevolucionInput"
+            examples:
+              devolucionValida:
+                value:
+                  originalFolio: 2045
+                  items:
+                    - sku: "SKU-JUGO1L"
+                      quantity: 1
+                  reason: "Producto en mal estado"
+      responses:
+        "201":
+          description: Devolución procesada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: "#/components/schemas/Devolucion"
+        "400":
+          description: >
+            El artículo no pertenece al ticket original, el importe supera
+            el monto original, o el período máximo de 30 días expiró
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                fueraDePlazo:
+                  value:
+                    success: false
+                    error: "El período máximo para procesar esta devolución (30 días) ha expirado"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: No se encontró ninguna venta con el folio original indicado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                folioInexistente:
+                  value:
+                    success: false
+                    error: "No se encontró ninguna venta con el folio #9999"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /inventario/entradas:
+    post:
+      tags: [Inventario]
+      summary: Registrar entrada de mercancía (US-I01)
+      description: >
+        La cantidad debe ser un entero positivo mayor a cero. Genera un
+        movimiento en el historial con fecha, usuario y referencia
+        (remisión/factura). Actualiza el stock de forma inmediata.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntradaInventarioInput"
+            examples:
+              entradaMercancia:
+                value:
+                  sku: "SKU-AGUA500"
+                  quantity: 50
+                  reference: "REM-20260101"
+      responses:
+        "201":
+          description: Entrada registrada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: "#/components/schemas/MovimientoInventario"
+        "400":
+          description: Cantidad inválida (debe ser entero positivo mayor a cero)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                cantidadInvalida:
+                  value:
+                    success: false
+                    error: "La cantidad de entrada debe ser un entero positivo mayor a cero"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /inventario/ajustes:
+    post:
+      tags: [Inventario]
+      summary: Ajuste manual de inventario (US-I02)
+      description: >
+        Ajuste positivo o negativo con motivo obligatorio (merma, robo,
+        error de conteo). Los ajustes negativos no pueden dejar el stock en
+        valores menores a cero.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AjusteInventarioInput"
+      responses:
+        "201":
+          description: Ajuste registrado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: "#/components/schemas/MovimientoInventario"
+        "400":
+          description: El ajuste dejaría el stock en un valor negativo, o falta el motivo
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                stockNegativo:
+                  value:
+                    success: false
+                    error: "El ajuste no puede dejar el stock en un valor menor a cero"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /inventario/alertas:
+    get:
+      tags: [Inventario]
+      summary: Consultar alertas de stock mínimo (US-I03)
+      description: >
+        Lista las alertas activas generadas cuando un producto alcanza su
+        stock mínimo configurado. Se cierran automáticamente al reabastecerse.
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [activa, cerrada]
+            default: activa
+      responses:
+        "200":
+          description: Lista de alertas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AlertaStock"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /inventario/movimientos:
+    get:
+      tags: [Inventario]
+      summary: Historial de movimientos de inventario (US-I04)
+      description: >
+        Consulta ventas, entradas, ajustes y devoluciones de un producto,
+        filtrando por rango de fechas. Es de solo lectura.
+      parameters:
+        - name: sku
+          in: query
+          schema:
+            type: string
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: export
+          in: query
+          description: Si se indica "csv", devuelve el historial exportado en ese formato
+          schema:
+            type: string
+            enum: [csv]
+      responses:
+        "200":
+          description: Historial de movimientos
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MovimientoInventario"
+            text/csv:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /inventario/existencias:
+    get:
+      tags: [Inventario]
+      summary: Reporte de existencias (US-I05)
+      description: >
+        Existencias actuales con valorización (stock × costo). Filtrable
+        por categoría y estado de alerta. Exportable a PDF o CSV.
+      parameters:
+        - name: categoryId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: alertStatus
+          in: query
+          schema:
+            type: string
+            enum: [normal, bajo_stock]
+        - name: export
+          in: query
+          schema:
+            type: string
+            enum: [csv, pdf]
+      responses:
+        "200":
+          description: Reporte de existencias
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        sku:
+                          type: string
+                        productName:
+                          type: string
+                        stock:
+                          type: integer
+                        cost:
+                          type: number
+                          format: float
+                        valorization:
+                          type: number
+                          format: float
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+            text/csv:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /turnos/apertura:
+    post:
+      tags: [Turnos y Corte de Caja]
+      summary: Apertura de turno (US-C01)
+      description: >
+        Solo puede haber un turno abierto por terminal a la vez, y un cajero
+        solo puede tener un turno activo (RN-05). No se puede vender en
+        efectivo sin turno abierto.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AperturaTurnoInput"
+            examples:
+              aperturaTurno:
+                value:
+                  terminal: "Caja 1"
+                  initialFund: 500.00
+      responses:
+        "201":
+          description: Turno abierto
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: "#/components/schemas/Turno"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: La terminal ya tiene un turno activo, o el cajero ya tiene otro turno abierto
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                terminalOcupada:
+                  value:
+                    success: false
+                    error: "La terminal Caja 1 ya tiene un turno activo (#T-088)"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /turnos/{turnoId}/retiros:
+    post:
+      tags: [Turnos y Corte de Caja]
+      summary: Retiro de efectivo (US-C03)
+      description: >
+        Requiere confirmación del supervisor. El monto no puede superar el
+        efectivo disponible en caja en ese momento.
+      parameters:
+        - $ref: "#/components/parameters/turnoIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetiroInput"
+      responses:
+        "201":
+          description: Retiro registrado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      turnoId:
+                        type: string
+                        format: uuid
+                      amount:
+                        type: number
+                        format: float
+                      authorizedBy:
+                        type: string
+                        format: uuid
+                      createdAt:
+                        type: string
+                        format: date-time
+        "400":
+          description: El monto del retiro supera el efectivo disponible en caja
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                montoExcedeCaja:
+                  value:
+                    success: false
+                    error: "El monto del retiro supera el efectivo disponible en caja"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /turnos/{turnoId}/corte-parcial:
+    post:
+      tags: [Turnos y Corte de Caja]
+      summary: Corte parcial / arqueo (US-C02)
+      description: >
+        Arqueo intermedio sin cerrar el turno. Calcula y registra la
+        diferencia (sobrante/faltante) sin modificar el estado del turno.
+      parameters:
+        - $ref: "#/components/parameters/turnoIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CorteParcialInput"
+      responses:
+        "200":
+          description: Arqueo registrado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: "#/components/schemas/CorteParcial"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /turnos/{turnoId}/corte-final:
+    post:
+      tags: [Turnos y Corte de Caja]
+      summary: Corte final de turno (US-C04)
+      description: >
+        Cierra el turno y deshabilita la terminal para nuevas ventas hasta
+        que se abra uno nuevo. El reporte incluye fondo inicial, ventas por
+        método de pago, retiros, saldo esperado, saldo contado y diferencia.
+      parameters:
+        - $ref: "#/components/parameters/turnoIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CorteFinalInput"
+            examples:
+              corteConFaltante:
+                summary: Corte final con faltante en efectivo
+                value:
+                  countedCash: 1380.00
+      responses:
+        "200":
+          description: Turno cerrado con el reporte de corte
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: "#/components/schemas/CorteFinal"
+              examples:
+                corteConFaltante:
+                  value:
+                    success: true
+                    data:
+                      turnoId: "b3f1c2e0-1a2b-4c3d-9e8f-0123456789ab"
+                      initialFund: 500.00
+                      totalSalesByMethod:
+                        efectivo: 1200.00
+                        tarjeta: 850.00
+                        vale_despensa: 0
+                      withdrawals: 300.00
+                      expectedBalance: 1400.00
+                      countedCash: 1380.00
+                      difference: -20.00
+                      status: faltante
+                      closedAt: "2026-07-02T22:15:00Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: El turno ya se encuentra cerrado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                turnoYaCerrado:
+                  value:
+                    success: false
+                    error: "El turno ya se encuentra cerrado"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /turnos:
+    get:
+      tags: [Turnos y Corte de Caja]
+      summary: Consultar reportes de turnos históricos (US-C05)
+      description: >
+        Reportes de solo lectura, filtrables por fecha, cajero o terminal.
+        Requiere rol administrador. Exportable a PDF.
+      parameters:
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: cashierId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: terminal
+          in: query
+          schema:
+            type: string
+        - name: export
+          in: query
+          schema:
+            type: string
+            enum: [pdf]
+      responses:
+        "200":
+          description: Lista de reportes de turno
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CorteFinal"
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/ServerError"

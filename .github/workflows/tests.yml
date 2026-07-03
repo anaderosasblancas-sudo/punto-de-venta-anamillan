@@ -1,0 +1,37 @@
+# .github/workflows/tests.yml
+#
+# CI: ejecuta automáticamente las pruebas Jest del backend POS ITH
+# cada vez que se hace push a la rama main, o se abre un Pull Request
+# hacia main. El proyecto usa Babel para transformar ES Modules antes
+# de que Jest pueda procesarlos (ver babel.config.js y jest.config.js).
+
+name: Pruebas Jest
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: Ejecutar pruebas
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar el código del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Instalar dependencias
+        run: npm install
+
+      - name: Ejecutar pruebas Jest
+        run: npm test
